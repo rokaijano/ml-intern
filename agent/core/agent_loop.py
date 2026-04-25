@@ -86,6 +86,9 @@ def _needs_approval(
 
         return True
 
+    if tool_name == "run_gcp_experiment":
+        return True
+
     # Check for file upload operations (hf_private_repos or other tools)
     if tool_name == "hf_private_repos":
         operation = tool_args.get("operation", "")

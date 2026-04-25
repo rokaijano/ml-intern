@@ -37,6 +37,10 @@ from agent.tools.github_read_file import (
     GITHUB_READ_FILE_TOOL_SPEC,
     github_read_file_handler,
 )
+from agent.tools.gcp_experiment_tool import (
+    GCP_EXPERIMENT_TOOL_SPEC,
+    run_gcp_experiment_handler,
+)
 from agent.tools.hf_repo_files_tool import (
     HF_REPO_FILES_TOOL_SPEC,
     hf_repo_files_handler,
@@ -129,11 +133,20 @@ class ToolRouter:
     Based on codex-rs/core/src/tools/router.rs
     """
 
-    def __init__(self, mcp_servers: dict[str, MCPServerConfig], hf_token: str | None = None, local_mode: bool = False):
+    def __init__(
+        self,
+        mcp_servers: dict[str, MCPServerConfig],
+        hf_token: str | None = None,
+        local_mode: bool = False,
+        enable_gcp_experiment: bool = False,
+    ):
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
 
-        for tool in create_builtin_tools(local_mode=local_mode):
+        for tool in create_builtin_tools(
+            local_mode=local_mode,
+            enable_gcp_experiment=enable_gcp_experiment,
+        ):
             self.register_tool(tool)
 
         self.mcp_client: Client | None = None
@@ -279,7 +292,10 @@ class ToolRouter:
 # ============================================================================
 
 
-def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
+def create_builtin_tools(
+    local_mode: bool = False,
+    enable_gcp_experiment: bool = False,
+) -> list[ToolSpec]:
     """Create built-in tool specifications"""
     # in order of importance
     tools = [
@@ -362,6 +378,16 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             handler=github_read_file_handler,
         ),
     ]
+
+    if enable_gcp_experiment:
+        tools.append(
+            ToolSpec(
+                name=GCP_EXPERIMENT_TOOL_SPEC["name"],
+                description=GCP_EXPERIMENT_TOOL_SPEC["description"],
+                parameters=GCP_EXPERIMENT_TOOL_SPEC["parameters"],
+                handler=run_gcp_experiment_handler,
+            )
+        )
 
     # Sandbox or local tools (highest priority)
     if local_mode:

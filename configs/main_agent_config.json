@@ -4,6 +4,7 @@
   "session_dataset_repo": "smolagents/ml-intern-sessions",
   "yolo_mode": false,
   "confirm_cpu_jobs": true,
+  "enable_gcp_experiment_tool": true,
   "auto_file_upload": true,
   "mcpServers": {
     "hf-mcp-server": {

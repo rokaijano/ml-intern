@@ -37,6 +37,7 @@ class Config(BaseModel):
     # Permission control parameters
     confirm_cpu_jobs: bool = True
     auto_file_upload: bool = False
+    enable_gcp_experiment_tool: bool = False
 
     # Reasoning effort *preference* — the ceiling the user wants. The probe
     # on `/model` walks a cascade down from here (``max`` → ``xhigh`` → ``high``
