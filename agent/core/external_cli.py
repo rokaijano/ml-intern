@@ -10,6 +10,7 @@ process rather than emitted back through ml-intern's ToolRouter.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import subprocess
@@ -27,6 +28,10 @@ COPILOT_MODEL_ID = "copilot-cli/default"
 EXTERNAL_CLI_MODELS = {CODEX_MODEL_ID, COPILOT_MODEL_ID}
 DEFAULT_TIMEOUT_SECONDS = 3600
 DEFAULT_PROMPT_MAX_CHARS = 60000
+HF_MCP_SERVER_NAME = "hf-mcp-server"
+HF_MCP_SERVER_URL = "https://huggingface.co/mcp?login"
+GITHUB_MCP_SERVER_NAME = "github"
+GITHUB_MCP_SERVER_URL = "https://api.githubcopilot.com/mcp/"
 
 
 @dataclass
@@ -84,11 +89,35 @@ def _message_to_text(message: Any) -> str:
     return text
 
 
-def render_external_cli_prompt(messages: list[Any]) -> str:
+def _external_cli_backend_instructions(model_name: str | None) -> list[str]:
+    common = [
+        "Use the backend's built-in local file and shell coding tools for repository work.",
+        "For GCP experiments, use the repository wrapper scripts/run_gcp_experiment.py "
+        "(or the ml-intern run_gcp_experiment tool if it is available). Do not run raw "
+        "gcloud commands directly.",
+    ]
+    if model_name == CODEX_MODEL_ID:
+        return [
+            *common,
+            f"Hugging Face MCP is configured as {HF_MCP_SERVER_NAME}.",
+            f"GitHub MCP is configured as {GITHUB_MCP_SERVER_NAME}.",
+        ]
+    if model_name == COPILOT_MODEL_ID:
+        return [
+            *common,
+            "Copilot CLI's built-in GitHub MCP server is enabled.",
+            f"Hugging Face MCP is configured as {HF_MCP_SERVER_NAME}.",
+        ]
+    return common
+
+
+def render_external_cli_prompt(messages: list[Any], model_name: str | None = None) -> str:
     parts = [
         "You are acting as ml-intern's selected coding backend for this turn.",
         "Work in the current repository, make necessary edits directly, run focused checks, "
         "and finish with a concise summary for the user.",
+        "Backend instructions:",
+        *[f"- {instruction}" for instruction in _external_cli_backend_instructions(model_name)],
         "Conversation so far:",
     ]
     parts.extend(_message_to_text(message) for message in messages)
@@ -110,6 +139,10 @@ def _codex_command(prompt: str, cwd: str, output_path: Path) -> list[str]:
     sandbox = os.environ.get("ML_INTERN_CODEX_SANDBOX", "workspace-write")
     return [
         executable,
+        "-c",
+        f'mcp_servers.{HF_MCP_SERVER_NAME}.url="{HF_MCP_SERVER_URL}"',
+        "-c",
+        f'mcp_servers.{GITHUB_MCP_SERVER_NAME}.url="{GITHUB_MCP_SERVER_URL}"',
         "--ask-for-approval",
         "never",
         "--sandbox",
@@ -127,6 +160,18 @@ def _codex_command(prompt: str, cwd: str, output_path: Path) -> list[str]:
 
 def _copilot_command(prompt: str, cwd: str) -> list[str]:
     executable = os.environ.get("ML_INTERN_COPILOT_COMMAND", "copilot")
+    hf_mcp_config = json.dumps(
+        {
+            "mcpServers": {
+                HF_MCP_SERVER_NAME: {
+                    "type": "http",
+                    "url": HF_MCP_SERVER_URL,
+                    "tools": ["*"],
+                }
+            }
+        },
+        separators=(",", ":"),
+    )
     return [
         executable,
         "-p",
@@ -134,6 +179,9 @@ def _copilot_command(prompt: str, cwd: str) -> list[str]:
         "--allow-all",
         "--add-dir",
         cwd,
+        "--enable-all-github-mcp-tools",
+        "--additional-mcp-config",
+        hf_mcp_config,
         "--stream",
         "off",
         "--output-format",
@@ -265,5 +313,5 @@ def _redacted_command(cmd: list[str]) -> list[str]:
 
 
 async def call_external_cli(model_name: str, messages: list[Any], cwd: str) -> ExternalCliResult:
-    prompt = render_external_cli_prompt(messages)
+    prompt = render_external_cli_prompt(messages, model_name)
     return await _run_external_cli(model_name, prompt, cwd)

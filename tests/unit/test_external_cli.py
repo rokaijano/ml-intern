@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -18,7 +19,19 @@ def test_builds_codex_command(monkeypatch, tmp_path):
         tmp_path / "last.txt",
     )
 
-    assert cmd[:5] == ["codex", "--ask-for-approval", "never", "--sandbox", "workspace-write"]
+    assert cmd[0] == "codex"
+    assert (
+        f'mcp_servers.{external_cli.HF_MCP_SERVER_NAME}.url="{external_cli.HF_MCP_SERVER_URL}"'
+        in cmd
+    )
+    assert (
+        f'mcp_servers.{external_cli.GITHUB_MCP_SERVER_NAME}.url="{external_cli.GITHUB_MCP_SERVER_URL}"'
+        in cmd
+    )
+    assert "--ask-for-approval" in cmd
+    assert "never" in cmd
+    assert "--sandbox" in cmd
+    assert "workspace-write" in cmd
     assert "exec" in cmd
     assert "-C" in cmd
     assert str(tmp_path) in cmd
@@ -36,8 +49,27 @@ def test_builds_copilot_command(monkeypatch, tmp_path):
 
     assert cmd[:3] == ["copilot", "-p", "fix the tests"]
     assert "--allow-all" in cmd
+    assert "--enable-all-github-mcp-tools" in cmd
     assert "--add-dir" in cmd
     assert str(tmp_path) in cmd
+    config = json.loads(cmd[cmd.index("--additional-mcp-config") + 1])
+    assert config["mcpServers"][external_cli.HF_MCP_SERVER_NAME] == {
+        "type": "http",
+        "url": external_cli.HF_MCP_SERVER_URL,
+        "tools": ["*"],
+    }
+
+
+def test_external_cli_prompt_includes_backend_instructions():
+    prompt = external_cli.render_external_cli_prompt(
+        [{"role": "user", "content": "launch the experiment"}],
+        external_cli.COPILOT_MODEL_ID,
+    )
+
+    assert "scripts/run_gcp_experiment.py" in prompt
+    assert "Do not run raw gcloud commands directly." in prompt
+    assert "built-in GitHub MCP server is enabled" in prompt
+    assert external_cli.HF_MCP_SERVER_NAME in prompt
 
 
 def test_external_cli_reads_codex_last_message(monkeypatch, tmp_path):
