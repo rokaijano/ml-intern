@@ -33,12 +33,26 @@ from session_manager import MAX_SESSIONS, AgentSession, SessionCapacityError, se
 import user_quotas
 
 from agent.core.llm_params import _resolve_llm_params
+from agent.core.external_cli import is_external_cli_model
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["agent"])
 
 AVAILABLE_MODELS = [
+    {
+        "id": "codex-cli/default",
+        "label": "Codex CLI",
+        "provider": "external-cli",
+        "tier": "local",
+        "recommended": True,
+    },
+    {
+        "id": "copilot-cli/default",
+        "label": "GitHub Copilot CLI",
+        "provider": "external-cli",
+        "tier": "local",
+    },
     {
         "id": "moonshotai/Kimi-K2.6",
         "label": "Kimi K2.6",
@@ -166,6 +180,8 @@ async def llm_health_check() -> LLMHealthResponse:
     - timeout / network → provider unreachable
     """
     model = session_manager.config.model_name
+    if is_external_cli_model(model):
+        return LLMHealthResponse(status="ok", model=model)
     try:
         llm_params = _resolve_llm_params(model, reasoning_effort="high")
         await acompletion(
@@ -729,5 +745,3 @@ async def submit_feedback(
             agent_session.session.config.session_dataset_repo
         )
     return {"status": "ok"}
-
-

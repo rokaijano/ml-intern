@@ -16,6 +16,7 @@ glues it to CLI output + session state.
 from __future__ import annotations
 
 from agent.core.effort_probe import ProbeInconclusive, probe_effort
+from agent.core.external_cli import CODEX_MODEL_ID, COPILOT_MODEL_ID, is_external_cli_model
 
 
 # Suggested models shown by `/model` (not a gate). Users can paste any HF
@@ -24,6 +25,8 @@ from agent.core.effort_probe import ProbeInconclusive, probe_effort
 # ":cheapest" / ":preferred" / ":<provider>" to override the default
 # routing policy (auto = fastest with failover).
 SUGGESTED_MODELS = [
+    {"id": CODEX_MODEL_ID, "label": "Codex CLI"},
+    {"id": COPILOT_MODEL_ID, "label": "GitHub Copilot CLI"},
     {"id": "bedrock/us.anthropic.claude-opus-4-7", "label": "Claude Opus 4.7"},
     {"id": "bedrock/us.anthropic.claude-opus-4-6-v1", "label": "Claude Opus 4.6"},
     {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},
@@ -63,7 +66,7 @@ def _print_hf_routing_info(model_id: str, console) -> bool:
     Anthropic / OpenAI ids return ``True`` without printing anything —
     the probe below covers "does this model exist".
     """
-    if model_id.startswith(("anthropic/", "openai/")):
+    if model_id.startswith(("anthropic/", "openai/")) or is_external_cli_model(model_id):
         return True
 
     from agent.core import hf_router_catalog as cat
@@ -136,7 +139,8 @@ def print_model_listing(config, console) -> None:
     console.print(
         "\n[dim]Paste any HF model id (e.g. 'MiniMaxAI/MiniMax-M2.7').\n"
         "Add ':fastest', ':cheapest', ':preferred', or ':<provider>' to override routing.\n"
-        "Use 'anthropic/<model>' or 'openai/<model>' for direct API access.[/dim]"
+        "Use 'anthropic/<model>' or 'openai/<model>' for direct API access.\n"
+        "Use 'codex-cli/default' or 'copilot-cli/default' for whole-turn CLI backends.[/dim]"
     )
 
 
@@ -144,6 +148,7 @@ def print_invalid_id(arg: str, console) -> None:
     console.print(f"[bold red]Invalid model id format:[/bold red] {arg}")
     console.print(
         "[dim]Expected:\n"
+        "  - codex-cli/default or copilot-cli/default\n"
         "  • <org>/<model>[:tag]    (HF router — paste from huggingface.co)\n"
         "  • anthropic/<model>\n"
         "  • openai/<model>[/dim]"
@@ -172,6 +177,14 @@ async def probe_and_switch_model(
     warning; the next real call re-surfaces the error if it's persistent.
     """
     preference = config.reasoning_effort
+    if is_external_cli_model(model_id):
+        _commit_switch(model_id, config, session, effective=None, cache=False)
+        console.print(
+            f"[green]Model switched to {model_id}[/green] "
+            "[dim](whole-turn CLI backend; no LiteLLM probe)[/dim]"
+        )
+        return
+
     if not _print_hf_routing_info(model_id, console):
         return
 

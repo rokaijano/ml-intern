@@ -15,6 +15,7 @@ from litellm.exceptions import ContextWindowExceededError
 from agent.config import Config
 from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
+from agent.core.external_cli import call_external_cli, is_external_cli_model
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event, OpType, Session
@@ -297,6 +298,37 @@ class LLMResult:
     token_count: int
     finish_reason: str | None
     usage: dict = field(default_factory=dict)
+
+
+async def _call_external_cli_model(session: Session, messages, tools) -> LLMResult:
+    """Call a whole-turn CLI backend such as Codex or GitHub Copilot."""
+    del tools
+    cwd = os.getcwd()
+    result = await call_external_cli(session.config.model_name, messages, cwd)
+    if not result.success:
+        raise RuntimeError(
+            "External CLI backend failed "
+            f"(exit_code={result.exit_code}).\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+
+    content = result.content or result.stdout
+    if content:
+        await session.send_event(Event(event_type="assistant_message", data={"content": content}))
+
+    usage = await telemetry.record_llm_call(
+        session,
+        model=session.config.model_name,
+        response=None,
+        latency_ms=result.latency_ms,
+        finish_reason="stop",
+    )
+    return LLMResult(
+        content=content or None,
+        tool_calls_acc={},
+        token_count=0,
+        finish_reason="stop",
+        usage=usage,
+    )
 
 
 async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
@@ -595,15 +627,20 @@ class Handlers:
                 # Pull the per-model probed effort from the session cache when
                 # available; fall back to the raw preference for models we
                 # haven't probed yet (e.g. research sub-model).
-                llm_params = _resolve_llm_params(
-                    session.config.model_name,
-                    session.hf_token,
-                    reasoning_effort=session.effective_effort_for(session.config.model_name),
-                )
-                if session.stream:
-                    llm_result = await _call_llm_streaming(session, messages, tools, llm_params)
+                if is_external_cli_model(session.config.model_name):
+                    llm_result = await _call_external_cli_model(session, messages, tools)
                 else:
-                    llm_result = await _call_llm_non_streaming(session, messages, tools, llm_params)
+                    llm_params = _resolve_llm_params(
+                        session.config.model_name,
+                        session.hf_token,
+                        reasoning_effort=session.effective_effort_for(session.config.model_name),
+                    )
+                    if session.stream:
+                        llm_result = await _call_llm_streaming(session, messages, tools, llm_params)
+                    else:
+                        llm_result = await _call_llm_non_streaming(
+                            session, messages, tools, llm_params
+                        )
 
                 content = llm_result.content
                 tool_calls_acc = llm_result.tool_calls_acc

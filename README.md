@@ -50,9 +50,16 @@ ml-intern "fine-tune llama on my dataset"
 
 ```bash
 ml-intern --model anthropic/claude-opus-4-6 "your prompt"
+ml-intern --model codex-cli/default "your prompt"
+ml-intern --model copilot-cli/default "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
+
+`codex-cli/default` and `copilot-cli/default` are whole-turn local CLI
+backends. They invoke the installed `codex` or `copilot` command once for the
+turn and return that CLI's final response; tool use happens inside the external
+CLI process rather than through ml-intern's LiteLLM tool-call loop.
 
 ## Architecture
 

@@ -26,6 +26,21 @@ const getHfAvatarUrl = (modelId: string) => {
 
 const MODEL_OPTIONS: ModelOption[] = [
   {
+    id: 'codex-cli',
+    name: 'Codex CLI',
+    description: 'Local',
+    modelPath: 'codex-cli/default',
+    avatarUrl: 'https://github.com/openai.png',
+    recommended: true,
+  },
+  {
+    id: 'copilot-cli',
+    name: 'GitHub Copilot CLI',
+    description: 'Local',
+    modelPath: 'copilot-cli/default',
+    avatarUrl: 'https://github.githubassets.com/images/modules/site/copilot/copilot.png',
+  },
+  {
     id: 'kimi-k2.6',
     name: 'Kimi K2.6',
     description: 'Novita',

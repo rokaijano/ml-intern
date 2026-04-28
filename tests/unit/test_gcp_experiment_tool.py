@@ -9,9 +9,10 @@ from agent.tools.gcp_experiment_tool import run_gcp_experiment_handler
 
 @pytest.fixture(autouse=True)
 def _clear_gcp_env(monkeypatch):
-    monkeypatch.delenv("ML_INTERN_GCP_ALLOWED_TEMPLATES", raising=False)
     monkeypatch.delenv("ML_INTERN_GCP_MAX_MINUTES", raising=False)
     monkeypatch.delenv("ML_INTERN_GCP_ALLOW_ANY_BRANCH", raising=False)
+    monkeypatch.delenv("ML_INTERN_GCP_SINGLE_FLIGHT", raising=False)
+    monkeypatch.delenv("ML_INTERN_GCP_LOCK_PATH", raising=False)
 
 
 def _run_tool(args):
@@ -32,30 +33,13 @@ def _args(repo):
     return {
         "repo_path": str(repo),
         "branch": "exp/test-run",
-        "template": "approved-template",
-        "zone": "us-central1-a",
         "minutes": 10,
         "command": "python train.py --steps 2",
     }
 
 
-def test_rejects_disallowed_template(tmp_path, monkeypatch):
-    repo = _make_repo(tmp_path)
-    monkeypatch.setenv("ML_INTERN_GCP_ALLOWED_TEMPLATES", "approved-template")
-
-    args = _args(repo)
-    args["template"] = "other-template"
-    payload, ok = _run_tool(args)
-
-    assert ok is False
-    assert payload["success"] is False
-    assert "not allowed" in payload["stderr"]
-    assert payload["exit_code"] is None
-
-
 def test_rejects_too_many_minutes(tmp_path, monkeypatch):
     repo = _make_repo(tmp_path)
-    monkeypatch.setenv("ML_INTERN_GCP_ALLOWED_TEMPLATES", "approved-template")
     monkeypatch.setenv("ML_INTERN_GCP_MAX_MINUTES", "5")
 
     args = _args(repo)
@@ -69,7 +53,6 @@ def test_rejects_too_many_minutes(tmp_path, monkeypatch):
 
 def test_rejects_non_exp_branch_by_default(tmp_path, monkeypatch):
     repo = _make_repo(tmp_path)
-    monkeypatch.setenv("ML_INTERN_GCP_ALLOWED_TEMPLATES", "approved-template")
     monkeypatch.delenv("ML_INTERN_GCP_ALLOW_ANY_BRANCH", raising=False)
 
     args = _args(repo)
@@ -81,9 +64,8 @@ def test_rejects_non_exp_branch_by_default(tmp_path, monkeypatch):
     assert "branch must start with 'exp/'" in payload["stderr"]
 
 
-def test_rejects_missing_script(tmp_path, monkeypatch):
+def test_rejects_missing_script(tmp_path):
     repo = _make_repo(tmp_path, with_script=False)
-    monkeypatch.setenv("ML_INTERN_GCP_ALLOWED_TEMPLATES", "approved-template")
 
     payload, ok = _run_tool(_args(repo))
 
@@ -94,7 +76,6 @@ def test_rejects_missing_script(tmp_path, monkeypatch):
 
 def test_invokes_subprocess_without_shell_true(tmp_path, monkeypatch):
     repo = _make_repo(tmp_path)
-    monkeypatch.setenv("ML_INTERN_GCP_ALLOWED_TEMPLATES", "approved-template")
     calls = []
 
     def fake_run(cmd, **kwargs):
@@ -117,10 +98,6 @@ def test_invokes_subprocess_without_shell_true(tmp_path, monkeypatch):
         "scripts/run_gcp_experiment.py",
         "--branch",
         "exp/test-run",
-        "--template",
-        "approved-template",
-        "--zone",
-        "us-central1-a",
         "--minutes",
         "10",
         "--command",
@@ -132,9 +109,24 @@ def test_invokes_subprocess_without_shell_true(tmp_path, monkeypatch):
     assert payload["exit_code"] == 0
 
 
+def test_invokes_optional_mode(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path)
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent.tools.gcp_experiment_tool.subprocess.run", fake_run)
+
+    args = _args(repo)
+    args["mode"] = "persistent"
+    payload, ok = _run_tool(args)
+
+    assert ok is True
+    assert payload["command_invoked"][-2:] == ["--mode", "persistent"]
+
+
 def test_returns_structured_failure_output(tmp_path, monkeypatch):
     repo = _make_repo(tmp_path)
-    monkeypatch.setenv("ML_INTERN_GCP_ALLOWED_TEMPLATES", "approved-template")
 
     def fake_run(cmd, **kwargs):
         return subprocess.CompletedProcess(
@@ -156,10 +148,6 @@ def test_returns_structured_failure_output(tmp_path, monkeypatch):
             "scripts/run_gcp_experiment.py",
             "--branch",
             "exp/test-run",
-            "--template",
-            "approved-template",
-            "--zone",
-            "us-central1-a",
             "--minutes",
             "10",
             "--command",
@@ -169,6 +157,19 @@ def test_returns_structured_failure_output(tmp_path, monkeypatch):
         "stderr": "experiment failed",
         "exit_code": 7,
     }
+
+
+def test_single_flight_rejects_existing_lock(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path)
+    lock = tmp_path / "experiment.lock"
+    lock.write_text("pid=123\n")
+    monkeypatch.setenv("ML_INTERN_GCP_LOCK_PATH", str(lock))
+
+    payload, ok = _run_tool(_args(repo))
+
+    assert ok is False
+    assert payload["success"] is False
+    assert "already running" in payload["stderr"]
 
 
 def test_tool_registered_only_when_enabled():
