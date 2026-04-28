@@ -9,7 +9,9 @@ process rather than emitted back through ml-intern's ToolRouter.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import signal
 import subprocess
 import tempfile
 import time
@@ -152,44 +154,102 @@ def build_external_cli_command(
     raise ValueError(f"unsupported external CLI model: {model_name}")
 
 
-def _run_external_cli_sync(model_name: str, prompt: str, cwd: str) -> ExternalCliResult:
+def _process_group_kwargs() -> dict[str, Any]:
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+async def _terminate_external_cli_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+
+    if os.name == "nt":
+        try:
+            taskkill = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/PID",
+                str(process.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await taskkill.wait()
+        except OSError:
+            process.terminate()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except asyncio.TimeoutError:
+        if os.name == "nt":
+            process.kill()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+        await process.wait()
+
+
+def _decode_output(data: bytes | None) -> str:
+    return (data or b"").decode("utf-8", errors="replace")
+
+
+async def _run_external_cli(model_name: str, prompt: str, cwd: str) -> ExternalCliResult:
     timeout = _timeout_seconds()
     start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="ml-intern-cli-") as tmp:
         output_path = Path(tmp) / "last-message.txt"
         cmd = build_external_cli_command(model_name, prompt, cwd, output_path)
+        process: asyncio.subprocess.Process | None = None
         try:
-            completed = subprocess.run(
-                cmd,
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
                 cwd=cwd,
-                shell=False,
-                capture_output=True,
-                text=True,
-                check=False,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **_process_group_kwargs(),
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(),
                 timeout=timeout,
             )
+            stdout = _decode_output(stdout_bytes)
+            stderr = _decode_output(stderr_bytes)
             content = output_path.read_text(encoding="utf-8") if output_path.exists() else ""
             if not content.strip():
-                content = completed.stdout or completed.stderr
+                content = stdout or stderr
             return ExternalCliResult(
                 content=scrub_string(content or ""),
-                success=completed.returncode == 0,
-                stdout=scrub_string(completed.stdout or ""),
-                stderr=scrub_string(completed.stderr or ""),
+                success=process.returncode == 0,
+                stdout=scrub_string(stdout),
+                stderr=scrub_string(stderr),
                 command_invoked=scrub(_redacted_command(cmd)),
                 latency_ms=int((time.monotonic() - start) * 1000),
-                exit_code=completed.returncode,
+                exit_code=process.returncode,
             )
-        except subprocess.TimeoutExpired as exc:
+        except asyncio.TimeoutError:
+            if process is not None:
+                await _terminate_external_cli_process(process)
             return ExternalCliResult(
                 content="",
                 success=False,
-                stdout=scrub_string(exc.stdout or ""),
-                stderr=f"External CLI timed out after {exc.timeout} seconds.",
+                stdout="",
+                stderr=f"External CLI timed out after {timeout} seconds.",
                 command_invoked=scrub(_redacted_command(cmd)),
                 latency_ms=int((time.monotonic() - start) * 1000),
                 exit_code=None,
             )
+        except asyncio.CancelledError:
+            if process is not None:
+                await _terminate_external_cli_process(process)
+            raise
 
 
 def _redacted_command(cmd: list[str]) -> list[str]:
@@ -205,7 +265,5 @@ def _redacted_command(cmd: list[str]) -> list[str]:
 
 
 async def call_external_cli(model_name: str, messages: list[Any], cwd: str) -> ExternalCliResult:
-    import asyncio
-
     prompt = render_external_cli_prompt(messages)
-    return await asyncio.to_thread(_run_external_cli_sync, model_name, prompt, cwd)
+    return await _run_external_cli(model_name, prompt, cwd)
